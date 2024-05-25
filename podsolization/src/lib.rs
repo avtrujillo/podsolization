@@ -1,4 +1,4 @@
-use std::{error::Error, future::Future, marker::PhantomData};
+use std::{error::Error, future::Future, marker::PhantomData, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,13 +13,13 @@ pub trait LocalResourceType<'a> {
     type ResourceProvider: Provider;
 
     // All the information needed to create an instance of this resource
-    type ResourceSpec;
+    type ResourceSpec: Serialize + Deserialize<'a>;
 
     // Information about this resource's state obtained from the provider
     type ResourceState: Serialize + Deserialize<'a>;
 
     // Enough info to locate the resource so it can be read, updated, or deleted
-    type ResourceIdentifier;
+    type ResourceIdentifier: Serialize + Deserialize<'a>;
 
     type CreateError: Error;
     type GetError: Error;
@@ -67,39 +67,47 @@ pub trait LocalResourceType<'a> {
     ) -> Result<(), Self::DeleteError>;
 }
 
-pub enum Resource<'a, R: ResourceType<'a>, DL: DependencyList, RB: ResourceBuilder<'a, R, DL>> {
+pub enum Resource<'a, R: ResourceType<'a>, DL: DependencyList<'a>, RB: ResourceBuilder<'a, R, DL>> {
     AwaitingDeps(DL),
     Building(R::ResourceSpec, Box<dyn Future<Output = R::ResourceState>>),
     Done(R::ResourceSpec, R::ResourceState),
     _NotUsed(PhantomData<RB>),
 }
 
-pub struct Dependency {
-
+pub struct Dependency<'a, R: ResourceType<'a>> {
+    state: Arc<R::ResourceSpec>
 }
 
-trait DependencyTupleTrait {}
+impl<'a, R: ResourceType<'a>> Serialize for Dependency<'a, R> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: serde::Serializer
+    {
+        self.state.serialize(serializer)
+    }
+}
 
-impl DependencyTupleTrait for () {}
+trait DependencyTupleTrait<'a> {}
 
-impl<Tail: DependencyTupleTrait > DependencyTupleTrait for (Dependency, Tail) {}
+impl<'a> DependencyTupleTrait<'a> for () {}
+
+impl<'a, Tail: DependencyTupleTrait<'a>, R: ResourceType<'a> > DependencyTupleTrait<'a> for (Dependency<'a, R>, Tail) {}
 
 // A collection of dependencies. Under the hood, we use tuple structs for type checking and
 // iteration, but we don't want users to have to work with tuple structs when building resources.
 // TODO: write a derive macro for this.
-pub trait DependencyList {
+pub trait DependencyList<'a> {
     #[allow(private_bounds)]
-    type DependencyTuple: DependencyTupleTrait;
+    type DependencyTuple: DependencyTupleTrait<'a>;
 
     fn tupleify(self) -> Self::DependencyTuple;
-    fn detupleify(self) -> Self::DependencyTuple;
+    fn detupleify(dt: Self::DependencyTuple) -> Self;
 }
 
 // A struct that creates a resource spec once its dependencies have been created.
 // This is intended to be implemented manually by users, though providers may wish to
 // provide implementations for common use cases of their products.
 #[trait_variant::make(ResourceBuilder: Send + Sync)]
-pub trait LocalResourceBuilder<'a, R: ResourceType<'a>, DL: DependencyList> {
+pub trait LocalResourceBuilder<'a, R: ResourceType<'a>, DL: DependencyList<'a>> {
     
     // Build a resource spec once the dependencies have been created.
     async fn build_spec(dependencies: DL) -> R::ResourceSpec;
