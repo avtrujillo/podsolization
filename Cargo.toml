@@ -1,5 +1,6 @@
 [workspace]
 members = [
-    "podsolization"
+    "podsolization",
+    "podsolization-macros"
 ]
 resolver = "2"
